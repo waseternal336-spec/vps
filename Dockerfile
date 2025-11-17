@@ -3,61 +3,60 @@ FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Kolkata
 
-ARG TAILSCALE_AUTHKEY="tskey-auth-kK6G9HkHkF11CNTRL-rFbFYV5cTtFfH4mHuFqVuFrcsUB53axqf"
+ARG NGROK_AUTHTOKEN="30Xt1F8pXJpc2no2LdQF4xqrmjT_7rUnMXDivp3iiAKpV1fAc"
 ARG ROOT_PASSWORD="Darkboy336"
 
-# Install dependencies
+# Install minimal tools and tzdata
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends apt-utils ca-certificates gnupg2 curl wget lsb-release tzdata && \
+    ln -fs /usr/share/zoneinfo/${TZ} /etc/localtime && \
+    dpkg-reconfigure --frontend noninteractive tzdata && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install common utilities, SSH, and software-properties-common for add-apt-repository
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
       openssh-server \
-      curl \
       wget \
+      curl \
+      git \
+      nano \
       sudo \
-      iptables \
-      iproute2 \
+      software-properties-common \
     && rm -rf /var/lib/apt/lists/*
 
-# Setup SSH
+# Python 3.12 - FIXED: added software-properties-common above
+RUN add-apt-repository ppa:deadsnakes/ppa -y && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends python3.12 python3.12-venv && \
+    rm -rf /var/lib/apt/lists/*
+
+# Make python3 point to python3.12
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1
+
+# SSH root password
 RUN echo "root:${ROOT_PASSWORD}" | chpasswd \
     && mkdir -p /var/run/sshd \
-    && sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config \
-    && sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
+    && sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config || true \
+    && sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config || true
 
-# Install Tailscale - FIXED VERSION
-RUN curl -fsSL https://tailscale.com/install.sh | sh
+# ngrok official repo
+RUN curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc | tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null \
+    && echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | tee /etc/apt/sources.list.d/ngrok.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends ngrok \
+    && rm -rf /var/lib/apt/lists/*
 
-# Create startup script
-RUN cat > /start.sh << 'EOF'
-#!/bin/bash
+# Add ngrok token
+RUN if [ -n "${NGROK_AUTHTOKEN}" ]; then ngrok config add-authtoken "${NGROK_AUTHTOKEN}"; fi
 
-# Start SSH server
-/usr/sbin/sshd
+# Optional hostname file
+RUN echo "Dark" > /etc/hostname
 
-# Start tailscaled in background
-tailscaled --tun=userspace-networking --socks5-server=localhost:1055 &
-
-# Wait for tailscaled to start
-sleep 5
-
-# Authenticate and connect to Tailscale
-tailscale up --authkey=${TAILSCALE_AUTHKEY} --hostname=zeabur-vps
-
-# Show connection info
-echo "=== Tailscale Status ==="
-tailscale status
-echo "=== Tailscale IP ==="
-tailscale ip
-
-# Keep container running
-echo "=== SSH Server Ready ==="
-echo "Connect using: ssh root@[tailscale-ip]"
-echo "Password: ${ROOT_PASSWORD}"
-sleep infinity
-EOF
-
-RUN chmod +x /start.sh
+# Force bash prompt
+RUN echo 'export PS1="root@Dark:\\w# "' >> /root/.bashrc
 
 EXPOSE 22
 
-# Use the startup script
-CMD ["/start.sh"]
+# Start sshd and ngrok (foreground)
+CMD ["sh", "-c", "/usr/sbin/sshd && ngrok tcp 22 --log=stdout"]
